@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 
 use Illuminate\Support\Collection;
 use SaintSystems\OData\ODataClient;
+use SaintSystems\OData\GuzzleHttpProvider;
 use SaintSystems\OData\QueryOptions;
 use SaintSystems\OData\Query\Builder;
 use SaintSystems\OData\Exception\ODataQueryException;
@@ -18,7 +19,8 @@ class BuilderTest extends TestCase
     public function setUp(): void
     {
         $this->baseUrl = 'https://services.odata.org/V4/TripPinService';
-        $this->client = new ODataClient($this->baseUrl);
+        $httpProvider = new GuzzleHttpProvider();
+        $this->client = new ODataClient($this->baseUrl, null, $httpProvider);
     }
 
     public function getBuilder()
@@ -688,6 +690,315 @@ class BuilderTest extends TestCase
             });
 
         $expectedUri = 'People?$select=Name&$filter=(FirstName eq \'Russell\' and LastName eq \'Whyte\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithWhereContains()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Airlines';
+
+        $builder->from($entitySet)
+                ->whereContains('Name', 'Airline');
+
+        $expectedUri = 'Airlines?$filter=contains(Name,\'Airline\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithOrWhereContains()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Airlines';
+
+        $builder->from($entitySet)
+                ->where('AirlineCode', 'AA')
+                ->orWhereContains('Name', 'Airline');
+
+        $expectedUri = 'Airlines?$filter=AirlineCode eq \'AA\' or contains(Name,\'Airline\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithWhereNotContains()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Airlines';
+
+        $builder->from($entitySet)
+                ->whereNotContains('Name', 'Airline');
+
+        $expectedUri = 'Airlines?$filter=indexof(Name,\'Airline\') eq -1';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithOrWhereNotContains()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Airlines';
+
+        $builder->from($entitySet)
+                ->where('AirlineCode', 'AA')
+                ->orWhereNotContains('Name', 'Airline');
+
+        $expectedUri = 'Airlines?$filter=AirlineCode eq \'AA\' or indexof(Name,\'Airline\') eq -1';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithMultipleContains()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Airlines';
+
+        $builder->from($entitySet)
+                ->whereContains('Name', 'Air')
+                ->whereNotContains('Name', 'Airline');
+
+        $expectedUri = 'Airlines?$filter=contains(Name,\'Air\') and indexof(Name,\'Airline\') eq -1';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithDateTimeValue()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'ProductSearch';
+
+        $builder->from($entitySet)
+                ->where('UpdatedAt', '>=', '2000-02-05T08:48:36+08:00');
+
+        $expectedUri = 'ProductSearch?$filter=UpdatedAt ge 2000-02-05T08:48:36+08:00';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithUrlEncodedDateTimeValue()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'ProductSearch';
+        
+        // Simulate URL-encoded datetime as user would provide
+        $filterEarliest = urlencode('2000-02-05T08:48:36+08:00');
+        $filterLatest = urlencode('2023-03-05T08:48:36+08:00');
+
+        $builder->from($entitySet)
+                ->where('UpdatedAt', '>=', $filterEarliest)
+                ->where('UpdatedAt', '<=', $filterLatest);
+
+        // Expected: URL-encoded datetime values should NOT be wrapped in quotes
+        $expectedUri = 'ProductSearch?$filter=UpdatedAt ge 2000-02-05T08%3A48%3A36%2B08%3A00 and UpdatedAt le 2023-03-05T08%3A48%3A36%2B08%3A00';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithVariousDateTimeFormats()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Events';
+
+        // Test different datetime formats
+        $cases = [
+            // ISO 8601 basic
+            ['2023-12-25T10:30:00', '2023-12-25T10:30:00'],
+            // ISO 8601 with timezone
+            ['2023-12-25T10:30:00+05:00', '2023-12-25T10:30:00+05:00'],
+            // URL encoded with timezone  
+            [urlencode('2023-12-25T10:30:00+05:00'), '2023-12-25T10%3A30%3A00%2B05%3A00'],
+            // URL encoded UTC
+            [urlencode('2023-12-25T10:30:00Z'), '2023-12-25T10%3A30%3A00Z'],
+        ];
+
+        foreach ($cases as [$input, $expected]) {
+            $builder = $this->getBuilder();
+            $builder->from($entitySet)->where('EventDate', '>=', $input);
+            
+            $expectedUri = "Events?\$filter=EventDate ge $expected";
+            $actualUri = $builder->toRequest();
+            
+            $this->assertEquals($expectedUri, $actualUri, "Failed for input: $input");
+        }
+    }
+
+    public function testEntityWithWhereAny()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->whereAny('Orders', function($query) {
+                    $query->where('Status', 'Completed');
+                });
+
+        $expectedUri = 'Customers?$filter=Orders/any(o: o/Status eq \'Completed\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithWhereAll()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->whereAll('Orders', function($query) {
+                    $query->where('Amount', '>', 100);
+                });
+
+        $expectedUri = 'Customers?$filter=Orders/all(o: o/Amount gt 100)';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithOrWhereAny()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->where('Status', 'Active')
+                ->orWhereAny('Orders', function($query) {
+                    $query->where('Status', 'Pending');
+                });
+
+        $expectedUri = 'Customers?$filter=Status eq \'Active\' or Orders/any(o: o/Status eq \'Pending\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithOrWhereAll()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->where('Status', 'Active')
+                ->orWhereAll('Orders', function($query) {
+                    $query->where('Amount', '<', 50);
+                });
+
+        $expectedUri = 'Customers?$filter=Status eq \'Active\' or Orders/all(o: o/Amount lt 50)';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithComplexLambdaCondition()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->whereAny('Orders', function($query) {
+                    $query->where('Status', 'Completed')
+                          ->where('Amount', '>', 100);
+                });
+
+        $expectedUri = 'Customers?$filter=Orders/any(o: o/Status eq \'Completed\' and o/Amount gt 100)';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithMultipleLambdaOperators()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->whereAny('Orders', function($query) {
+                    $query->where('Status', 'Completed');
+                })
+                ->whereAll('Invoices', function($query) {
+                    $query->where('Paid', true);
+                });
+
+        $expectedUri = 'Customers?$filter=Orders/any(o: o/Status eq \'Completed\') and Invoices/all(i: i/Paid eq true)';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithLambdaOperatorAndSelect()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->select('Name', 'Email')
+                ->whereAny('Orders', function($query) {
+                    $query->where('Status', 'Pending');
+                });
+
+        $expectedUri = 'Customers?$select=Name,Email&$filter=Orders/any(o: o/Status eq \'Pending\')';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithNestedLambdaCondition()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Customers';
+
+        $builder->from($entitySet)
+                ->whereAny('Orders', function($query) {
+                    $query->where(function($nested) {
+                        $nested->where('Status', 'Completed')
+                               ->orWhere('Status', 'Shipped');
+                    })->where('Amount', '>', 50);
+                });
+
+        $expectedUri = 'Customers?$filter=Orders/any(o: (o/Status eq \'Completed\' or o/Status eq \'Shipped\') and o/Amount gt 50)';
+        $actualUri = $builder->toRequest();
+
+        $this->assertEquals($expectedUri, $actualUri);
+    }
+
+    public function testEntityWithDifferentNavigationPropertyNames()
+    {
+        $builder = $this->getBuilder();
+
+        $entitySet = 'Products';
+
+        $builder->from($entitySet)
+                ->whereAny('Reviews', function($query) {
+                    $query->where('Rating', '>=', 4);
+                })
+                ->whereAll('Suppliers', function($query) {
+                    $query->where('Verified', true);
+                });
+
+        $expectedUri = 'Products?$filter=Reviews/any(r: r/Rating ge 4) and Suppliers/all(s: s/Verified eq true)';
         $actualUri = $builder->toRequest();
 
         $this->assertEquals($expectedUri, $actualUri);

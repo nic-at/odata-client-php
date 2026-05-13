@@ -1,6 +1,6 @@
 {
     "name": "saintsystems/odata-client",
-    "version": "0.7.4",
+    "version": "1.0.1",
     "description": "Saint Systems OData Client for PHP",
     "keywords": [
         "odata",
@@ -17,13 +17,23 @@
         }
     ],
     "require": {
-        "php": "^7.3 || ^8.0",
-        "guzzlehttp/guzzle": "^7.0",
+        "php": "^7.4 || ^8.0 || ^8.1 || ^8.2 || ^8.3 || ^8.4 || ^8.5",
         "nesbot/carbon": "^2.0 || ^3.0",
-        "illuminate/support": "^6.0 || ^7.0 || ^8.0 || ^9.0 || ^10.0 || ^11.0 || ^12.0"
+        "illuminate/support": "^6.0 || ^7.0 || ^8.0 || ^9.0 || ^10.0 || ^11.0 || ^12.0 || ^13.0",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0",
+        "psr/http-message": "^1.0 || ^2.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.0 || ^10.5"
+        "guzzlehttp/guzzle": "^7.0",
+        "phpunit/phpunit": "^9.5 || ^10.0 || ^11.0 || ^12.0",
+        "phpstan/phpstan": "^2.1"
+    },
+    "suggest": {
+        "guzzlehttp/guzzle": "^7.0 - For using the GuzzleHttpProvider implementation",
+        "psr/http-client": "^1.0 - For using PSR-18 HTTP clients",
+        "psr/http-factory": "^1.0 - For using PSR-17 HTTP factories",
+        "php-http/discovery": "^1.0 - For automatic discovery of PSR-17/PSR-18 implementations"
     },
     "autoload": {
         "files": [
@@ -35,5 +45,9 @@
     },
     "config": {
         "preferred-install": "dist"
+    },
+    "scripts": {
+        "test": "./scripts/phpunit.sh",
+        "int": "./scripts/integration-test.sh"
     }
 }

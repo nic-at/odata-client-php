@@ -9,7 +9,6 @@ use Illuminate\Support\LazyCollection;
 use SaintSystems\OData\Constants;
 use SaintSystems\OData\Exception\ODataQueryException;
 use SaintSystems\OData\IODataClient;
-use SaintSystems\OData\IODataRequest;
 use SaintSystems\OData\QueryOptions;
 
 class Builder
@@ -109,6 +108,13 @@ class Builder
     public $orders;
 
     /**
+     * The custom options for the query.
+     *
+     * @var array
+     */
+    public $customOption;
+
+    /**
      * The maximum number of records to return.
      *
      * @var int
@@ -171,6 +177,13 @@ class Builder
     private $grammar;
 
     /**
+     * Custom headers for the request
+     *
+     * @var array
+     */
+    public $headers;
+
+    /**
      * Create a new query builder instance.
      *
      * @param IODataClient $client
@@ -179,12 +192,13 @@ class Builder
      */
     public function __construct(
         IODataClient $client,
-        IGrammar $grammar = null,
-        IProcessor $processor = null
+        ?IGrammar $grammar = null,
+        ?IProcessor $processor = null
     ) {
         $this->client = $client;
         $this->grammar = $grammar ?: $client->getQueryGrammar();
         $this->processor = $processor ?: $client->getPostProcessor();
+        $this->headers = [];
     }
 
     /**
@@ -244,6 +258,128 @@ class Builder
         $this->client->setEntityKey($this->entityKey);
         return $this;
     }
+        
+    /**
+     * Add custom option to query parameters.
+     * 
+     * This method merges custom query options instead of overwriting them.
+     * It supports both string and array formats:
+     * 
+     * String format: 'key=value'
+     * Array format: ['key' => 'value', 'key2' => 'value2']
+     * 
+     * Custom option keys must follow OData naming conventions:
+     * - Must not start with '$' or '@' (reserved for standard OData parameters)
+     * - Must be valid identifiers (alphanumeric and underscores)
+     * - Cannot be empty
+     * 
+     * Examples:
+     * $query->addOption('custom_param=value1')
+     *       ->addOption('another_param=value2');
+     * 
+     * $query->addOption(['timeout' => '30', 'format' => 'minimal']);
+     *
+     * @param string|array $option The custom option to add (string 'key=value' or associative array)
+     *
+     * @return $this
+     * @throws \InvalidArgumentException If option key is invalid
+     */
+    public function addOption($option)
+    {
+        if ($option === null || $option === '') {
+            return $this;
+        }
+
+        // Initialize customOption as array if not set
+        if (!isset($this->customOption)) {
+            $this->customOption = [];
+        }
+
+        // Convert existing string format to array for merging
+        if (is_string($this->customOption)) {
+            $this->customOption = $this->parseCustomOptionString($this->customOption);
+        }
+
+        // Convert current option to array format for processing
+        if (is_string($option)) {
+            $newOptions = $this->parseCustomOptionString($option);
+        } elseif (is_array($option)) {
+            $newOptions = $option;
+        } else {
+            throw new \InvalidArgumentException('Custom option must be a string or array');
+        }
+
+        // Validate and merge options
+        foreach ($newOptions as $key => $value) {
+            $this->validateCustomOptionKey($key);
+            $this->customOption[$key] = $value;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Parse a custom option string in 'key=value' format into an array.
+     *
+     * @param string $optionString The option string to parse
+     * @return array Parsed options as associative array
+     * @throws \InvalidArgumentException If string format is invalid
+     */
+    protected function parseCustomOptionString($optionString)
+    {
+        $options = [];
+        
+        if (strpos($optionString, '=') === false) {
+            throw new \InvalidArgumentException('Custom option string must contain "=" separator');
+        }
+
+        $pairs = explode(',', $optionString);
+        foreach ($pairs as $pair) {
+            $pair = trim($pair);
+            if (empty($pair)) {
+                continue;
+            }
+            
+            $parts = explode('=', $pair, 2);
+            if (count($parts) !== 2) {
+                throw new \InvalidArgumentException("Invalid custom option format: '$pair'. Expected 'key=value'");
+            }
+            
+            $key = trim($parts[0]);
+            $value = trim($parts[1]);
+            
+            if (empty($key)) {
+                throw new \InvalidArgumentException('Custom option key cannot be empty');
+            }
+            
+            $options[$key] = $value;
+        }
+        
+        return $options;
+    }
+
+    /**
+     * Validate a custom option key according to OData conventions.
+     *
+     * @param string $key The option key to validate
+     * @throws \InvalidArgumentException If key is invalid
+     */
+    protected function validateCustomOptionKey($key)
+    {
+        if (empty($key) || !is_string($key)) {
+            throw new \InvalidArgumentException('Custom option key must be a non-empty string');
+        }
+
+        // Check if key starts with '$' or '@' (reserved for OData system parameters)
+        if (strpos($key, '$') === 0 || strpos($key, '@') === 0) {
+            throw new \InvalidArgumentException("Custom option key '$key' cannot start with '\$' or '@' (reserved for OData system parameters)");
+        }
+
+        // Check for valid identifier pattern (alphanumeric, underscores, hyphens)
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_-]*$/', $key)) {
+            throw new \InvalidArgumentException("Custom option key '$key' must be a valid identifier (alphanumeric, underscores, hyphens, starting with letter or underscore)");
+        }
+    }    
 
     /**
      * Add an $expand clause to the query.
@@ -824,6 +960,129 @@ class Builder
         return $this->whereNotIn($column, $list, 'or');
     }
 
+    /**
+     * Add a "where contains" clause to the query.
+     *
+     * @param  string  $column
+     * @param  string  $value
+     * @param  string  $boolean
+     * @param  bool    $not
+     * @return $this
+     */
+    public function whereContains($column, $value, $boolean = 'and', $not = false)
+    {
+        $type = $not ? 'NotContains' : 'Contains';
+
+        $this->wheres[] = compact('type', 'column', 'value', 'boolean');
+
+        return $this;
+    }
+
+    /**
+     * Add an "or where contains" clause to the query.
+     *
+     * @param  string  $column
+     * @param  string  $value
+     * @return Builder|static
+     */
+    public function orWhereContains($column, $value)
+    {
+        return $this->whereContains($column, $value, 'or');
+    }
+
+    /**
+     * Add a "where not contains" clause to the query.
+     *
+     * @param  string  $column
+     * @param  string  $value
+     * @param  string  $boolean
+     * @return Builder|static
+     */
+    public function whereNotContains($column, $value, $boolean = 'and')
+    {
+        return $this->whereContains($column, $value, $boolean, true);
+    }
+
+    /**
+     * Add an "or where not contains" clause to the query.
+     *
+     * @param  string  $column
+     * @param  string  $value
+     * @return Builder|static
+     */
+    public function orWhereNotContains($column, $value)
+    {
+        return $this->whereNotContains($column, $value, 'or');
+    }
+
+    /**
+     * Add a "where any" lambda clause to the query.
+     *
+     * @param  string  $navigationProperty
+     * @param  \Closure  $callback
+     * @param  string  $boolean
+     * @return $this
+     */
+    public function whereAny($navigationProperty, Closure $callback, $boolean = 'and')
+    {
+        $type = 'Any';
+
+        // Create a new query instance for the lambda condition
+        call_user_func($callback, $query = $this->forNestedWhere());
+
+        $this->wheres[] = compact('type', 'navigationProperty', 'query', 'boolean');
+
+        $this->addBinding($query->getBindings(), 'where');
+
+        return $this;
+    }
+
+    /**
+     * Add an "or where any" lambda clause to the query.
+     *
+     * @param  string  $navigationProperty
+     * @param  \Closure  $callback
+     * @return Builder|static
+     */
+    public function orWhereAny($navigationProperty, Closure $callback)
+    {
+        return $this->whereAny($navigationProperty, $callback, 'or');
+    }
+
+    /**
+     * Add a "where all" lambda clause to the query.
+     *
+     * @param  string  $navigationProperty
+     * @param  \Closure  $callback
+     * @param  string  $boolean
+     * @return $this
+     */
+    public function whereAll($navigationProperty, Closure $callback, $boolean = 'and')
+    {
+        $type = 'All';
+
+        // Create a new query instance for the lambda condition
+        call_user_func($callback, $query = $this->forNestedWhere());
+
+        $this->wheres[] = compact('type', 'navigationProperty', 'query', 'boolean');
+
+        $this->addBinding($query->getBindings(), 'where');
+
+        return $this;
+    }
+
+    /**
+     * Add an "or where all" lambda clause to the query.
+     *
+     * @param  string  $navigationProperty
+     * @param  \Closure  $callback
+     * @return Builder|static
+     */
+    public function orWhereAll($navigationProperty, Closure $callback)
+    {
+        return $this->whereAll($navigationProperty, $callback, 'or');
+    }
+
 
 
     /**
@@ -935,6 +1194,31 @@ class Builder
     }
 
     /**
+     * Set custom headers for the request.
+     *
+     * @param array $headers
+     * @return Builder|static
+     */
+    public function withHeaders(array $headers)
+    {
+        $this->headers = array_merge($this->headers, $headers);
+        return $this;
+    }
+
+    /**
+     * Add a custom header to the request.
+     *
+     * @param string $name
+     * @param string $value
+     * @return Builder|static
+     */
+    public function withHeader($name, $value)
+    {
+        $this->headers[$name] = $value;
+        return $this;
+    }
+
+    /**
      * Execute the query as a "GET" request.
      *
      * @param array $properties
@@ -1013,8 +1297,10 @@ class Builder
      *
      * @return boolean
      */
-    public function delete($options = null)
+    public function delete($id, $options = null)
     {
+        $this->whereKey($id);
+        
         $results = $this->processor->processSelect($this, $this->runDelete());
 
         return true;
@@ -1060,13 +1346,24 @@ class Builder
     /**
      * Run the query as a "GET" request against the client.
      *
-     * @return IODataRequest
+     * @return IODataResponse
      */
     protected function runGet()
     {
-        return $this->client->get(
+        // Temporarily set headers on client if builder has custom headers
+        $originalHeaders = $this->client->getHeaders();
+        if (!empty($this->headers)) {
+            $this->client->setHeaders(array_merge($originalHeaders, $this->headers));
+        }
+        
+        $result = $this->client->get(
             $this->grammar->compileSelect($this), $this->getBindings()
         );
+        
+        // Restore original headers
+        $this->client->setHeaders($originalHeaders);
+        
+        return $result;
     }
 
     /**
@@ -1077,46 +1374,90 @@ class Builder
     public function cursor()
     {
         return new LazyCollection(function() {
-            yield from $this->client->cursor(
-                $this->grammar->compileSelect($this), $this->getBindings()
-            );
+            // Temporarily set headers on client if builder has custom headers
+            $originalHeaders = $this->client->getHeaders();
+            if (!empty($this->headers)) {
+                $this->client->setHeaders(array_merge($originalHeaders, $this->headers));
+            }
+            
+            try {
+                yield from $this->client->cursor(
+                    $this->grammar->compileSelect($this), $this->getBindings()
+                );
+            } finally {
+                // Restore original headers
+                $this->client->setHeaders($originalHeaders);
+            }
         });
     }
 
     /**
-     * Run the query as a "GET" request against the client.
+     * Run the query as a "PATCH" request against the client.
      *
-     * @return IODataRequest
+     * @return IODataResponse
      */
     protected function runPatch($body)
     {
-        return $this->client->patch(
+        // Temporarily set headers on client if builder has custom headers
+        $originalHeaders = $this->client->getHeaders();
+        if (!empty($this->headers)) {
+            $this->client->setHeaders(array_merge($originalHeaders, $this->headers));
+        }
+        
+        $result = $this->client->patch(
             $this->grammar->compileSelect($this), $body
         );
+        
+        // Restore original headers
+        $this->client->setHeaders($originalHeaders);
+        
+        return $result;
     }
 
     /**
-     * Run the query as a "GET" request against the client.
+     * Run the query as a "POST" request against the client.
      *
-     * @return IODataRequest
+     * @return IODataResponse
      */
     protected function runPost($body)
     {
-        return $this->client->post(
+        // Temporarily set headers on client if builder has custom headers
+        $originalHeaders = $this->client->getHeaders();
+        if (!empty($this->headers)) {
+            $this->client->setHeaders(array_merge($originalHeaders, $this->headers));
+        }
+        
+        $result = $this->client->post(
             $this->grammar->compileSelect($this), $body
         );
+        
+        // Restore original headers
+        $this->client->setHeaders($originalHeaders);
+        
+        return $result;
     }
 
     /**
-     * Run the query as a "GET" request against the client.
+     * Run the query as a "DELETE" request against the client.
      *
-     * @return IODataRequest
+     * @return IODataResponse
      */
     protected function runDelete()
     {
-        return $this->client->delete(
+        // Temporarily set headers on client if builder has custom headers
+        $originalHeaders = $this->client->getHeaders();
+        if (!empty($this->headers)) {
+            $this->client->setHeaders(array_merge($originalHeaders, $this->headers));
+        }
+        
+        $result = $this->client->delete(
             $this->grammar->compileSelect($this)
         );
+        
+        // Restore original headers
+        $this->client->setHeaders($originalHeaders);
+        
+        return $result;
     }
 
     /**
@@ -1140,7 +1481,7 @@ class Builder
      *
      * @param array $values
      *
-     * @return bool
+     * @return IODataResponse
      */
     public function insert(array $values)
     {

@@ -49,6 +49,7 @@ class Grammar implements IGrammar
         'expands',
         //'search',
         'orders',
+        'customOption',
         'skip',
         'skiptoken',
         'take',
@@ -359,6 +360,88 @@ class Grammar implements IGrammar
     }
 
     /**
+     * Determines if the value is a URL-encoded datetime format
+     *
+     * @param string $value
+     * @return bool
+     */
+    protected function isUrlEncodedDateTime($value)
+    {
+        if (!is_string($value)) {
+            return false;
+        }
+
+        // First try to URL decode the value
+        $decoded = urldecode($value);
+        
+        // Skip if the value wasn't actually URL encoded (decoded is same as original)
+        if ($decoded === $value) {
+            return false;
+        }
+        
+        // Check if the decoded value matches common ISO 8601 datetime patterns
+        $patterns = [
+            // Basic ISO 8601: 2023-12-25T10:30:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/',
+            // ISO 8601 with milliseconds: 2023-12-25T10:30:00.123
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$/',
+            // ISO 8601 with timezone: 2023-12-25T10:30:00+05:00 or 2023-12-25T10:30:00-05:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/',
+            // ISO 8601 with milliseconds and timezone: 2023-12-25T10:30:00.123+05:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}[+-]\d{2}:\d{2}$/',
+            // ISO 8601 UTC: 2023-12-25T10:30:00Z
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/',
+            // ISO 8601 UTC with milliseconds: 2023-12-25T10:30:00.123Z
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}Z$/',
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $decoded)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Determines if the value is a datetime string (not URL encoded)
+     *
+     * @param string $value
+     * @return bool
+     */
+    protected function isDateTime($value)
+    {
+        if (!is_string($value)) {
+            return false;
+        }
+        
+        // Check if it matches common ISO 8601 datetime patterns
+        $patterns = [
+            // Basic ISO 8601: 2023-12-25T10:30:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/',
+            // ISO 8601 with milliseconds: 2023-12-25T10:30:00.123
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}$/',
+            // ISO 8601 with timezone: 2023-12-25T10:30:00+05:00 or 2023-12-25T10:30:00-05:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/',
+            // ISO 8601 with milliseconds and timezone: 2023-12-25T10:30:00.123+05:00
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}[+-]\d{2}:\d{2}$/',
+            // ISO 8601 UTC: 2023-12-25T10:30:00Z
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/',
+            // ISO 8601 UTC with milliseconds: 2023-12-25T10:30:00.123Z
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}Z$/',
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $value)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
      * Compile the "order by" portions of the query.
      *
      * @param Builder  $query
@@ -391,6 +474,50 @@ class Grammar implements IGrammar
                         : $order['sql'];
         }, $orders);
     }
+
+    /**
+     * Compile the custom options portion of the query.
+     *
+     * @param Builder $query The query builder instance
+     * @param string|array|null $customOption The custom options to compile
+     *
+     * @return string The compiled custom options as query parameters
+     */
+    protected function compileCustomOption(Builder $query, $customOption)
+    {
+        if (is_null($customOption) || (is_array($customOption) && empty($customOption))) {
+            return '';
+        }
+
+        if (is_array($customOption)) {
+            $customOption = $this->compileCompositeCustomOption($customOption);
+        }
+
+        return $this->appendQueryParam($customOption);
+    }
+
+    /**
+     * Compile the composite Custom Options into a query parameter string.
+     *
+     * Converts an associative array of custom options into a 'key=value&key2=value2' format
+     * suitable for URL query parameters.
+     *
+     * @param array $customOption Associative array of custom options
+     *
+     * @return string Compiled custom options string
+     */
+    public function compileCompositeCustomOption($customOption)
+    {
+        $customOptions = [];
+        foreach ($customOption as $key => $value) {
+            // URL encode both key and value to handle special characters
+            $encodedKey = urlencode($key);
+            $encodedValue = urlencode($value);
+            $customOptions[] = $encodedKey . '=' . $encodedValue;
+        }
+
+        return implode('&', $customOptions);
+    }    
 
     /**
      * Compile the "$top" portions of the query.
@@ -468,15 +595,49 @@ class Grammar implements IGrammar
      */
     protected function concatenate($segments)
     {
-        // return implode('', array_filter($segments, function ($value) {
-        //     return (string) $value !== '';
-        // }));
         $uri = '';
+        $queryParams = [];
+        $hasQueryString = false;
+        $hasEntitySet = false;
+        
         foreach ($segments as $segment => $value) {
             if ((string) $value !== '') {
-                $uri.= strpos($uri, '?$') ? '&' . $value : $value;
+                if ($segment === 'entitySet') {
+                    $hasEntitySet = true;
+                    $uri .= $value;
+                } else if ($segment === 'entityKey' || $segment === 'count') {
+                    // These are path segments, not query parameters
+                    $uri .= $value;
+                } else if ($segment === 'queryString') {
+                    // queryString already includes the '?' 
+                    $hasQueryString = true;
+                    // Skip it if empty or just '?'
+                    if ($value !== '?') {
+                        $uri .= $value;
+                    }
+                } else {
+                    // This is a query parameter - collect it
+                    $queryParams[] = $value;
+                }
             }
         }
+        
+        // Add query parameters if any
+        if (!empty($queryParams)) {
+            // Only add '?' if we have an entity set or already have content
+            if ($hasEntitySet || strlen($uri) > 0) {
+                // If we already have a queryString with '?', use '&' to join
+                if ($hasQueryString && strpos($uri, '?') !== false) {
+                    $uri .= '&' . implode('&', $queryParams);
+                } else {
+                    $uri .= '?' . implode('&', $queryParams);
+                }
+            } else {
+                // No entity set, just return the query params without '?'
+                $uri .= implode('&', $queryParams);
+            }
+        }
+        
         return $uri;
     }
 
@@ -541,8 +702,13 @@ class Grammar implements IGrammar
         // stringify all values if it has NOT an odata enum or special syntax primitive data type
         // (ex. Microsoft.OData.SampleService.Models.TripPin.PersonGender'Female' or datetime'1970-01-01T00:00:00')
         if (!preg_match("/^([\w]+\.)+([\w]+)(\'[\w]+\')$/", $value) && !$this->isSpecialPrimitiveDataType($value)) {
-            // Check if the value is a string and NOT a date
-            if (is_string($value) && !\DateTime::createFromFormat('Y-m-d\TH:i:sT', $value)) {
+            // Check if the value is a URL-encoded datetime or a regular datetime
+            if ($this->isUrlEncodedDateTime($value) || $this->isDateTime($value)) {
+                // Don't wrap datetime values in quotes - they should be passed as-is
+                return $value;
+            } 
+            // Check if the value is a string and should be quoted
+            else if (is_string($value)) {
                 $value = "'".$value."'";
             } else if(is_bool($value)){
                 $value = $value ? 'true' : 'false';
@@ -641,6 +807,120 @@ class Grammar implements IGrammar
     protected function whereNotIn(Builder $query, $where)
     {
         return 'not(' . $where['column'] . ' in (\'' . implode('\',\'', $where['list'])  . '\'))';
+    }
+
+    /**
+     * Compile a "where contains" clause.
+     *
+     * @param  Builder  $query
+     * @param  array  $where
+     * @return string
+     */
+    protected function whereContains(Builder $query, $where)
+    {
+        $value = $this->prepareValue($where['value']);
+        return 'contains(' . $where['column'] . ',' . $value . ')';
+    }
+
+    /**
+     * Compile a "where not contains" clause.
+     *
+     * @param  Builder  $query
+     * @param  array  $where
+     * @return string
+     */
+    protected function whereNotContains(Builder $query, $where)
+    {
+        $value = $this->prepareValue($where['value']);
+        return 'indexof(' . $where['column'] . ',' . $value . ') eq -1';
+    }
+
+    /**
+     * Compile a "where any" lambda clause.
+     *
+     * @param  Builder  $query
+     * @param  array  $where
+     * @return string
+     */
+    protected function whereAny(Builder $query, $where)
+    {
+        $lambdaVariable = strtolower(substr($where['navigationProperty'], 0, 1));
+        $nestedWhere = $this->compileWheres($where['query']);
+        
+        // Extract the condition part from the nested where clause
+        $condition = $this->extractLambdaCondition($nestedWhere, $lambdaVariable);
+        
+        return $where['navigationProperty'] . '/any(' . $lambdaVariable . ': ' . $condition . ')';
+    }
+
+    /**
+     * Compile a "where all" lambda clause.
+     *
+     * @param  Builder  $query
+     * @param  array  $where
+     * @return string
+     */
+    protected function whereAll(Builder $query, $where)
+    {
+        $lambdaVariable = strtolower(substr($where['navigationProperty'], 0, 1));
+        $nestedWhere = $this->compileWheres($where['query']);
+        
+        // Extract the condition part from the nested where clause
+        $condition = $this->extractLambdaCondition($nestedWhere, $lambdaVariable);
+        
+        return $where['navigationProperty'] . '/all(' . $lambdaVariable . ': ' . $condition . ')';
+    }
+
+    /**
+     * Extract the lambda condition from nested where clause and prefix columns with lambda variable.
+     *
+     * @param  string  $nestedWhere
+     * @param  string  $lambdaVariable
+     * @return string
+     */
+    protected function extractLambdaCondition($nestedWhere, $lambdaVariable)
+    {
+        // Remove the $filter= prefix from nested where clause
+        $offset = (substr($nestedWhere, 0, 1) === '&') ? 9 : 8;
+        $condition = substr($nestedWhere, $offset);
+        
+        // If the condition starts with '(' and ends with ')', it's already properly nested
+        // This happens when multiple where clauses are used in the lambda
+        if (substr($condition, 0, 1) === '(' && substr($condition, -1) === ')') {
+            // Remove outer parentheses temporarily to process inner content
+            $innerCondition = substr($condition, 1, -1);
+            $processedInner = $this->prefixColumnsWithLambdaVariable($innerCondition, $lambdaVariable);
+            return '(' . $processedInner . ')';
+        } else {
+            // Single condition, process normally
+            return $this->prefixColumnsWithLambdaVariable($condition, $lambdaVariable);
+        }
+    }
+
+    /**
+     * Prefix column names with lambda variable.
+     *
+     * @param  string  $condition
+     * @param  string  $lambdaVariable
+     * @return string
+     */
+    protected function prefixColumnsWithLambdaVariable($condition, $lambdaVariable)
+    {
+        // Replace column references with lambda variable prefix
+        // Use a more precise pattern that only matches property names at the start of comparisons
+        return preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\s+(eq|ne|gt|ge|lt|le)\s+/', function($matches) use ($lambdaVariable) {
+            $property = $matches[1];
+            $operator = $matches[2];
+            
+            // Don't prefix if it's already prefixed, a keyword, or looks like it's already processed
+            if (strpos($property, '/') !== false || 
+                in_array($property, ['and', 'or', 'not', 'eq', 'ne', 'gt', 'ge', 'lt', 'le', 'true', 'false', 'null']) ||
+                strlen($property) < 2) {
+                return $matches[0];
+            }
+            
+            return $lambdaVariable . '/' . $property . ' ' . $operator . ' ';
+        }, $condition);
     }
 
     /**
